@@ -19,6 +19,10 @@ local zipato_mt = { __index = zipato }
 -- https method is set on the module table, such that it can be overridden
 -- by another implementation (eg. Copas)
 zipato.https = require "ssl.https"
+-- Logger is set on the module table, to be able to override it
+-- supports: debug, info, warn, error, fatal
+-- log:debug([message]|[table]|[format, ...]|[function, ...])
+zipato.log = require("logging.console")()
 
 
 
@@ -75,10 +79,12 @@ local function zipa_request(path, method, headers, query, body)
     source = ltn12.source.string(body or ""),
     sink = ltn12.sink.table(response_body),
   }
---print(("="):rep(60))
---print("Request: "..require("pl.pretty").write(r))
+  zipato.log:debug("[zipato] making api request to: %s %s", r.method, r.url)
+  --zipato.log:debug(r)  -- not logging because of credentials
+
   local ok, response_code, response_headers, response_status_line = zipato.https.request(r)
   if not ok then
+    zipato.log:error("[zipato] api request failed with: %s", response_code)
     return ok, response_code, response_headers, response_status_line
   end
 
@@ -98,6 +104,8 @@ local function zipa_request(path, method, headers, query, body)
 --  status = response_code,
 --  headers = response_headers,
 --}))
+
+  zipato.log:debug("[zipato] api request returned: %s", response_code)
 
   return ok, response_body, response_code, response_headers, response_status_line
 end
@@ -120,6 +128,8 @@ function zipato.new(username, password)
     username = assert(username, "1st parameter, 'username' is missing"),
     password = sha1(assert(password, "2nd parameter, 'password' is missing")),
   }
+  zipato.log:debug("[zipato] created new instance for %s", self.username)
+
   return setmetatable(self, zipato_mt)
 end
 
@@ -152,15 +162,20 @@ local _request do
     local ok, response_body, response_code, response_headers, response_status_line = zipa_request(path, method, headers, query, body)
 
     if retry_codes[response_code or -1] then
-      -- we seem to be logged out/expired
-      --print(">>> retrying <<<", response_code)
-      self:logout() -- force logout, drop current cookie value
-      return _request(self, false, path, method, headers, query, body)
+      if auto_renew then
+        -- we seem to be logged out/expired
+        zipato.log:error("[zipato] _request failed with: '%s', (retrying after logout)", response_code)
+        self:logout() -- force logout, drop current cookie value
+        return _request(self, false, path, method, headers, query, body)
+      else
+        zipato.log:error("[zipato] retrying _request failed with:  %s", response_code)
+      end
     end
 
     -- if we get a new JSESSIONID cookie, then store it
     local cookie = (response_headers or {})["set-cookie"] or ""
     if cookie:find("JSESSIONID=", 1, true) then
+      zipato.log:debug("[zipato] request returned new JSESSIONID", response_code)
       self.cookie = cookie
     end
 
@@ -207,7 +222,7 @@ end
 -- This reduces the error handling to standard Lua errors, instead of having to
 -- validate each of the situations above individually.
 -- @param expected (number) optional expected status code, if nil, it will be ignored
--- @param ... same partameters as the `request` method
+-- @param ... same parameters as the `request` method
 -- @return nil+err or the input arguments
 -- @usage
 -- local zipato = require "zipato"
@@ -251,10 +266,12 @@ end
 --   zsession:logout()
 -- end
 function zipato:logout()
+  zipato.log:debug("[zipato] logout for %s", self.username)
   if self.cookie then
     local ok, response_body = self:rewrite_error(200, _request(self, false, "/user/logout", "GET"))
     self.cookie = nil
     if not ok then
+      zipato.log:error("[zipato] logout for %s failed: %s", self.username, response_body)
       return nil, "failed to log out: " .. response_body
     end
   end
@@ -276,9 +293,11 @@ end
 --   print("failed to login: ", err)
 -- end
 function zipato:login()
+  zipato.log:debug("[zipato] initiating login for %s", self.username)
 
   local ok, response_body, _, headers = self:rewrite_error(200, zipa_request("/user/init", "GET"))
   if not ok then
+    zipato.log:error("[zipato] failed to get nonce: %s", response_body)
     return nil, "failed to get nonce: "..response_body
   end
 
@@ -291,6 +310,7 @@ function zipato:login()
   ok, response_body = self:rewrite_error(200, _request(self, false, "/user/login", "GET", nil, query))
   if not ok then
     self.cookie = nil
+    zipato.log:error("[zipato] failed to login: %s", response_body)
     return nil, "failed to login: "..response_body
   end
 
