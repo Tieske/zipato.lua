@@ -11,7 +11,9 @@
 local url = require "socket.url"
 local ltn12 = require "ltn12"
 local json = require "cjson.safe"
-local sha1 = require("sha1")
+local sha1 = require "sha1"
+local socket = require "socket"
+local now = socket.gettime
 
 local zipato = {}
 local zipato_mt = { __index = zipato }
@@ -32,7 +34,7 @@ zipato.log = require("logging.console")()
 -- @section Generic
 
 
-local base_url="https://my.zipato.com:443/zipato-web/v2"
+local base_url="https://my.zipato.com/zipato-web/v2"
 
 
 
@@ -112,29 +114,6 @@ end
 
 
 
---- Creates a new Zipato session instance.
--- @param username (string) required, the username to use for login
--- @param password (string) required, the password to use for login
--- @return zipato session object
--- @usage
--- local zipato = require "zipato"
--- local zsession = zipato.new("myself@nothere.com", "secret_password")
--- local ok, err = zsession:login()
--- if not ok then
---   print("failed to login: ", err)
--- end
-function zipato.new(username, password)
-  local self = {
-    username = assert(username, "1st parameter, 'username' is missing"),
-    password = sha1(assert(password, "2nd parameter, 'password' is missing")),
-  }
-  zipato.log:debug("[zipato] created new instance for %s", self.username)
-
-  return setmetatable(self, zipato_mt)
-end
-
-
-
 local _request do
   -- these return codes will force a logout, login, and a retry
   local retry_codes = {
@@ -184,9 +163,52 @@ local _request do
 
 end
 
+
+
+--- Creates a new Zipato session instance.
+-- @param username (string) required, the username to use for login
+-- @param password (string) required, the password to use for login
+-- @param opts (table, optional) additional options
+-- @return zipato session object
+-- @usage
+-- local zipato = require "zipato"
+-- local zsession = zipato.new("myself@nothere.com", "secret_password", {
+--   attribute_update_config = {
+--     update_interval = 1,   -- max age in seconds before refreshing
+--     callback = function(session, uuid, value)
+--       -- callback called for each attribute value update
+--     end,
+--   }
+-- })
+-- local ok, err = zsession:login()
+-- if not ok then
+--   print("failed to login: ", err)
+-- end
+function zipato.new(username, password, opts)
+  opts = opts or {}
+  opts.attribute_update_config = opts.attribute_update_config or {}
+
+  local self = {
+    username = assert(username, "1st parameter, 'username' is missing"),
+    password = sha1(assert(password, "2nd parameter, 'password' is missing")),
+    _attribute_values = {},
+    _attribute_update_config = {
+      update_interval = opts.attribute_update_config.update_interval or 1,
+      callback = opts.attribute_update_config.callback,
+      expires = 0,
+      handle = nil,
+    },
+  }
+  zipato.log:debug("[zipato] created new instance for %s", self.username)
+
+  return setmetatable(self, zipato_mt)
+end
+
+
+
 --- Performs a HTTP request on the Zipato API.
 -- It will automatically inject authentication/session data. Or if not logged
--- logged in yet, it will log in. If the session has expired it will be renewed.
+-- in yet, it will log in. If the session has expired it will be renewed.
 --
 -- NOTE: if the response_body is json, then it will be decoded and returned as
 -- a Lua table.
@@ -210,6 +232,7 @@ end
 function zipato:request(path, method, headers, query, body)
   return _request(self, true, path, method, headers, query, body)
 end
+
 
 
 --- Rewrite errors to Lua format (nil+error).
@@ -326,24 +349,248 @@ end
 
 
 
---- Gets an attribute value.
+-- Gets an attribute value; "/attributes/{uuid}/value GET".
 -- @param attribute_uuid (string) the uuid of the attribute to get the value of.
 -- @return value + response_body, or nil+err
--- @usage
 -- @usage
 -- local zipato = require "zipato"
 -- local zsession = zipato.new("myself@nothere.com", "secret_password")
 -- local value, body = zsession:get_attribute_value("some_attribute_uuid_here")
 -- local last_change = body.timestamp
-function zipato:get_attribute_value(attribute_uuid)
+--function zipato:get_attribute_value(attribute_uuid)
 
-  local ok, response_body = self:rewrite_error(200, self:request("/attributes/"..attribute_uuid.."/value", "GET"))
+--  local ok, response_body = self:rewrite_error(200, self:request("/attributes/"..attribute_uuid.."/value", "GET"))
+--  if not ok then
+--    return nil, "failed to get value: "..response_body
+--  end
+
+--  return response_body.value, response_body
+--end
+
+
+
+--- Sets an attribute value; "/attributes/{uuid}/value PUT".
+-- @param attribute_uuid (string) the uuid of the attribute to set the value of.
+-- @param value (optional) the value to set
+-- @param timestamp (Date, optional) timestamp for the value to set
+-- @param pendingValue (optional) pendingValue to set
+-- @param pendingTimestamp (Date, optional) timestamp for the pendingValue to set
+-- @return true, or nil+err
+function zipato:set_attribute_value(attribute_uuid, value, timestamp, pendingValue, pendingTimestamp)
+  local body = {
+    value = tostring(value),
+    timestamp = timestamp,
+    pendingValue = tostring(pendingValue),
+    pendingTimestamp = pendingTimestamp,
+  }
+
+  local ok, response_body = self:rewrite_error(202, self:request("/attributes/"..attribute_uuid.."/value", "PUT", nil, nil, body))
   if not ok then
-    return nil, "failed to get value: "..response_body
+    return nil, "failed to set attribute value to: "..response_body
   end
 
   return response_body.value, response_body
 end
+
+
+
+--- Returns list of all devices; "/devices GET".
+-- @return list, or nil+err
+function zipato:get_devices()
+
+  local ok, response_body = self:rewrite_error(200, self:request("/devices", "GET"))
+  if not ok then
+    return nil, "failed to get devices: "..response_body
+  end
+
+  return response_body
+end
+
+
+
+--- Returns a device by name or uuid.
+-- Retreives the list through `get_devices` but only returns the requested one.
+-- @return device, or nil+err
+function zipato:find_device(uuid_or_name)
+
+  local device_list, err = self:get_devices()
+  if not device_list then
+    return nil, err
+  end
+
+  for _, device in ipairs(device_list) do
+    if device.name == uuid_or_name or
+       device.uuid == uuid_or_name then
+      return device
+    end
+  end
+  return nil, "device not found"
+end
+
+
+
+--- Returns device details by device_uuid; "/devices/{uuid} GET".
+-- @param device_uuid (string) uuid of device to get
+-- @param query (table, optional) query parameters, default: `{ full=true }`
+-- @return device, or nil+err
+function zipato:get_device_details(device_uuid, query)
+
+  local ok, device_details = self:rewrite_error(200, self:request("/devices/" .. device_uuid, "GET", nil, query or { full = "true" }))
+  if not ok then
+    return nil, "failed to get device details: "..device_details
+  end
+
+  return device_details
+end
+
+
+
+--- Returns device attributes by device.
+-- Gets all attributes from the device endpoints; "/endpoints/{uuid}", and
+-- combines them into a single attribute table.
+-- @param device_uuid (string) uuid of device to get
+-- @return attribute array, or nil+err
+function zipato:get_device_attributes(device_uuid)
+
+  local details, err = self:get_device_details(device_uuid)
+  if not details then
+    return nil, err
+  end
+
+  local endpoints = details.endpoints or {}
+  local attributes = {}
+
+  for _, endpoint in ipairs(endpoints) do
+    local ok, response_body = self:rewrite_error(200, self:request("/endpoints/"..endpoint.uuid, "GET", nil, { attributes = "true" }))
+    if not ok then
+      return nil, "failed to get endpoint details: "..response_body
+    end
+
+    for _, attrib in ipairs(response_body.attributes or {}) do
+      attributes[#attributes + 1] = attrib
+    end
+  end
+
+  return attributes
+end
+
+
+
+--- Returns all attribute values; "/attributes/values" GET.
+-- @param handle (string, optional) handle of last call for updates
+-- @param update (boolean, optional) request only updated values or all, defaults to true if handle is given, or false if not
+-- @param raw (boolean, optional) if true, raw results, otherwise a table keyed by uuid, with the value as value
+-- @return raw values array + handle, or nil+err
+function zipato:get_attribute_values(handle, update, raw)
+
+  if update == nil then
+    update = not not handle
+  end
+
+  local headers = { ["If-None-Match"] = handle }
+  local query = { update = update }
+
+  local ok, response_body, _, response_headers = self:rewrite_error(200, self:request("/attributes/all", "GET", headers, query))
+  if not ok then
+    return nil, "failed to get attribute values: "..response_body
+  end
+
+  if raw then
+    return response_body, assert(response_headers["Etag"])
+  end
+
+  local values = {}
+  for _, value_update in ipairs(response_body or {}) do
+    values[value_update.uuid] = value_update.value.value
+  end
+
+  return values, assert(response_headers["Etag"])
+end
+
+
+
+-------------------------------------------------------------------------------
+-- Session tracked attributes.
+-- A session can track the status of attributes, to prevent to have to do too
+-- many API calls. It fetches the list once, and keeps track of updates.
+--
+-- Behaviour can be configured using `opts.attribute_update_config` settings
+-- (see `new`).
+--
+-- The `update_interval` property determines when a value expires. Getting a value
+-- while the values have expired, will cause an update of the values first.
+--
+-- The `callback` property will be called for each updated value.
+-- @section Attributes
+
+
+
+--- Fetches attribute values tracked by the session.
+-- This will force an update, even if the values haven't expired yet. This
+-- could for example be called on a recurring timer. With a configured `callback`
+-- to handle the updates.
+-- @return true, or nil+err
+function zipato:fetch_attribute_values()
+  local config = self._attribute_update_config
+  local list = self._attribute_values
+
+  -- we need an update
+  local newlist, newhandle = self:get_attribute_values(config.handle)
+  if not newlist then
+    config.handle = nil   -- just in case; get all values from scratch next time
+    return nil, newhandle
+  end
+
+  local callback = config.callback
+  local callbacks = {}
+
+  for uuid, value in pairs(newlist) do
+    list[uuid] = value
+    if callback then
+      -- we do not execute callbacks, because the callback might recurse into
+      -- this update function, and we need to have all values updated before
+      -- that can happen.
+      callbacks[uuid] = value
+    end
+  end
+
+  config.handle = newhandle
+  config.expires = now() + config.update_interval
+
+  -- all values are up-to-date now, only now execute callbacks
+  if callback then
+    for uuid, value in pairs(callbacks or {}) do
+      local ok, err = pcall(callback, self, uuid, value)
+      if not ok then
+        zipato.log:error("[zipato] attribute update callback for %s failed: %s", self.username, err)
+      end
+    end
+  end
+
+  return true
+end
+
+
+
+--- Gets a single attribute value, as tracked by the session.
+-- If the current values are to old, it will update them in the process
+-- by calling `fetch_attribute_values` first.
+-- @param uuid (string) the uuid of the attribute to return the value of
+-- @return value, or nil+err
+-- @see fetch_attribute_values
+function zipato:get_attribute_value(uuid)
+  if self._attribute_update_config.expires <= now() then
+    self:fetch_attribute_values()
+  end
+
+  local value = self._attribute_values[uuid]
+  if value == nil then
+    return nil, "attribute not found"
+  end
+
+  return value
+end
+
 
 
 return zipato
