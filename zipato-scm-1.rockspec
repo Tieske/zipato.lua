@@ -2,7 +2,7 @@ package = "zipato"
 version = "scm-1"
 
 source = {
-  url = "git://github.com/Tieske/zipato.lua",
+  url = "git://github.com/Tieske/zipato.lua/", --trailing / to work around luarocks bug with ".lua" extensions
   --tag = "0.1.0",
   branch = "master",
 }
@@ -19,7 +19,7 @@ description = {
 dependencies = {
   "lua >= 5.1, < 5.4",
   "luasec",
-  "cjson",
+  "lua-cjson",
   "sha1",
 }
 
