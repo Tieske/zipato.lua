@@ -31,6 +31,7 @@
 <ul>
 <li><a href="#Generic_functions">Generic functions </a></li>
 <li><a href="#API_specific_functions">API specific functions </a></li>
+<li><a href="#Session_tracked_attributes">Session tracked attributes </a></li>
 </ul>
 
 
@@ -71,7 +72,7 @@
 	<td class="summary">Logs out of the current session.</td>
 	</tr>
 	<tr>
-	<td class="name" nowrap><a href="#new">new (username, password)</a></td>
+	<td class="name" nowrap><a href="#new">new (username, password, opts)</a></td>
 	<td class="summary">Creates a new Zipato session instance.</td>
 	</tr>
 	<tr>
@@ -86,8 +87,39 @@
 <h2><a href="#API_specific_functions">API specific functions </a></h2>
 <table class="function_list">
 	<tr>
-	<td class="name" nowrap><a href="#get_attribute_value">get_attribute_value (attribute_uuid)</a></td>
-	<td class="summary">Gets an attribute value.</td>
+	<td class="name" nowrap><a href="#find_device">find_device (uuid_or_name)</a></td>
+	<td class="summary">Returns a device by name or uuid.</td>
+	</tr>
+	<tr>
+	<td class="name" nowrap><a href="#get_attribute_values">get_attribute_values (handle, update, raw)</a></td>
+	<td class="summary">Returns all attribute values; "/attributes/values" GET.</td>
+	</tr>
+	<tr>
+	<td class="name" nowrap><a href="#get_device_attributes">get_device_attributes (device_uuid)</a></td>
+	<td class="summary">Returns device attributes by device.</td>
+	</tr>
+	<tr>
+	<td class="name" nowrap><a href="#get_device_details">get_device_details (device_uuid, query)</a></td>
+	<td class="summary">Returns device details by device_uuid; "/devices/{uuid} GET".</td>
+	</tr>
+	<tr>
+	<td class="name" nowrap><a href="#get_devices">get_devices ()</a></td>
+	<td class="summary">Returns list of all devices; "/devices GET".</td>
+	</tr>
+	<tr>
+	<td class="name" nowrap><a href="#set_attribute_value">set_attribute_value (attribute_uuid, value, timestamp, pendingValue, pendingTimestamp)</a></td>
+	<td class="summary">Sets an attribute value; "/attributes/{uuid}/value PUT".</td>
+	</tr>
+</table>
+<h2><a href="#Session_tracked_attributes">Session tracked attributes </a></h2>
+<table class="function_list">
+	<tr>
+	<td class="name" nowrap><a href="#fetch_attribute_values">fetch_attribute_values ()</a></td>
+	<td class="summary">Fetches attribute values tracked by the session.</td>
+	</tr>
+	<tr>
+	<td class="name" nowrap><a href="#get_attribute_value">get_attribute_value (uuid)</a></td>
+	<td class="summary">Gets a single attribute value, as tracked by the session.</td>
 	</tr>
 </table>
 
@@ -163,7 +195,7 @@
 </dd>
     <dt>
     <a name = "new"></a>
-    <strong>new (username, password)</strong>
+    <strong>new (username, password, opts)</strong>
     </dt>
     <dd>
     Creates a new Zipato session instance.
@@ -176,6 +208,9 @@
         </li>
         <li><span class="parameter">password</span>
          (string) required, the password to use for login
+        </li>
+        <li><span class="parameter">opts</span>
+         (table, optional) additional options
         </li>
     </ul>
 
@@ -190,7 +225,14 @@
     <h3>Usage:</h3>
     <ul>
         <pre class="example"><span class="keyword">local</span> zipato = <span class="global">require</span> <span class="string">"zipato"</span>
-<span class="keyword">local</span> zsession = zipato.new(<span class="string">"myself@nothere.com"</span>, <span class="string">"secret_password"</span>)
+<span class="keyword">local</span> zsession = zipato.new(<span class="string">"myself@nothere.com"</span>, <span class="string">"secret_password"</span>, {
+  attribute_update_config = {
+    update_interval = <span class="number">1</span>,   <span class="comment">-- max age in seconds before refreshing
+</span>    callback = <span class="keyword">function</span>(session, uuid, value)
+      <span class="comment">-- callback called for each attribute value update
+</span>    <span class="keyword">end</span>,
+  }
+})
 <span class="keyword">local</span> ok, err = zsession:login()
 <span class="keyword">if</span> <span class="keyword">not</span> ok <span class="keyword">then</span>
   <span class="global">print</span>(<span class="string">"failed to login: "</span>, err)
@@ -205,7 +247,7 @@
     <dd>
     Performs a HTTP request on the Zipato API.
  It will automatically inject authentication/session data. Or if not logged
- logged in yet, it will log in. If the session has expired it will be renewed.</p>
+ in yet, it will log in. If the session has expired it will be renewed.</p>
 
 <p> NOTE: if the response_body is json, then it will be decoded and returned as
  a Lua table.
@@ -277,7 +319,7 @@
          (number) optional expected status code, if nil, it will be ignored
         </li>
         <li><span class="parameter">...</span>
-         same partameters as the <a href="index.html#request">request</a> method
+         same parameters as the <a href="index.html#request">request</a> method
         </li>
     </ul>
 
@@ -310,36 +352,242 @@
           </div>
     <dl class="function">
     <dt>
-    <a name = "get_attribute_value"></a>
-    <strong>get_attribute_value (attribute_uuid)</strong>
+    <a name = "find_device"></a>
+    <strong>find_device (uuid_or_name)</strong>
     </dt>
     <dd>
-    Gets an attribute value.
+    Returns a device by name or uuid.
+ Retreives the list through <a href="index.html#get_devices">get_devices</a> but only returns the requested one.
 
 
     <h3>Parameters:</h3>
     <ul>
-        <li><span class="parameter">attribute_uuid</span>
-         (string) the uuid of the attribute to get the value of.
+        <li><span class="parameter">uuid_or_name</span>
+
+
+
         </li>
     </ul>
 
     <h3>Returns:</h3>
     <ol>
 
-        value + response_body, or nil+err
+        device, or nil+err
     </ol>
 
 
 
-    <h3>Usage:</h3>
+
+</dd>
+    <dt>
+    <a name = "get_attribute_values"></a>
+    <strong>get_attribute_values (handle, update, raw)</strong>
+    </dt>
+    <dd>
+    Returns all attribute values; "/attributes/values" GET.
+
+
+    <h3>Parameters:</h3>
     <ul>
-        <li><pre class="example"></pre></li>
-        <li><pre class="example"><span class="keyword">local</span> zipato = <span class="global">require</span> <span class="string">"zipato"</span>
-<span class="keyword">local</span> zsession = zipato.new(<span class="string">"myself@nothere.com"</span>, <span class="string">"secret_password"</span>)
-<span class="keyword">local</span> value, body = zsession:get_attribute_value(<span class="string">"some_attribute_uuid_here"</span>)
-<span class="keyword">local</span> last_change = body.timestamp</pre></li>
+        <li><span class="parameter">handle</span>
+         (string, optional) handle of last call for updates
+        </li>
+        <li><span class="parameter">update</span>
+         (boolean, optional) request only updated values or all, defaults to true if handle is given, or false if not
+        </li>
+        <li><span class="parameter">raw</span>
+         (boolean, optional) if true, raw results, otherwise a table keyed by uuid, with the value as value
+        </li>
     </ul>
+
+    <h3>Returns:</h3>
+    <ol>
+
+        raw values array + handle, or nil+err
+    </ol>
+
+
+
+
+</dd>
+    <dt>
+    <a name = "get_device_attributes"></a>
+    <strong>get_device_attributes (device_uuid)</strong>
+    </dt>
+    <dd>
+    Returns device attributes by device.
+ Gets all attributes from the device endpoints; "/endpoints/{uuid}", and
+ combines them into a single attribute table.
+
+
+    <h3>Parameters:</h3>
+    <ul>
+        <li><span class="parameter">device_uuid</span>
+         (string) uuid of device to get
+        </li>
+    </ul>
+
+    <h3>Returns:</h3>
+    <ol>
+
+        attribute array, or nil+err
+    </ol>
+
+
+
+
+</dd>
+    <dt>
+    <a name = "get_device_details"></a>
+    <strong>get_device_details (device_uuid, query)</strong>
+    </dt>
+    <dd>
+    Returns device details by device_uuid; "/devices/{uuid} GET".
+
+
+    <h3>Parameters:</h3>
+    <ul>
+        <li><span class="parameter">device_uuid</span>
+         (string) uuid of device to get
+        </li>
+        <li><span class="parameter">query</span>
+         (table, optional) query parameters, default: <code>{ full=true }</code>
+        </li>
+    </ul>
+
+    <h3>Returns:</h3>
+    <ol>
+
+        device, or nil+err
+    </ol>
+
+
+
+
+</dd>
+    <dt>
+    <a name = "get_devices"></a>
+    <strong>get_devices ()</strong>
+    </dt>
+    <dd>
+    Returns list of all devices; "/devices GET".
+
+
+
+    <h3>Returns:</h3>
+    <ol>
+
+        list, or nil+err
+    </ol>
+
+
+
+
+</dd>
+    <dt>
+    <a name = "set_attribute_value"></a>
+    <strong>set_attribute_value (attribute_uuid, value, timestamp, pendingValue, pendingTimestamp)</strong>
+    </dt>
+    <dd>
+    Sets an attribute value; "/attributes/{uuid}/value PUT".
+
+
+    <h3>Parameters:</h3>
+    <ul>
+        <li><span class="parameter">attribute_uuid</span>
+         (string) the uuid of the attribute to set the value of.
+        </li>
+        <li><span class="parameter">value</span>
+         (optional) the value to set
+        </li>
+        <li><span class="parameter">timestamp</span>
+         (Date, optional) timestamp for the value to set
+        </li>
+        <li><span class="parameter">pendingValue</span>
+         (optional) pendingValue to set
+        </li>
+        <li><span class="parameter">pendingTimestamp</span>
+         (Date, optional) timestamp for the pendingValue to set
+        </li>
+    </ul>
+
+    <h3>Returns:</h3>
+    <ol>
+
+        true, or nil+err
+    </ol>
+
+
+
+
+</dd>
+</dl>
+    <h2 class="section-header has-description"><a name="Session_tracked_attributes"></a>Session tracked attributes </h2>
+
+          <div class="section-description">
+           A session can track the status of attributes, to prevent to have to do too
+ many API calls. It fetches the list once, and keeps track of updates.</p>
+
+<p> Behaviour can be configured using <code>opts.attribute_update_config</code> settings
+ (see <a href="index.html#new">new</a>).</p>
+
+<p> The <code>update_interval</code> property determines when a value expires. Getting a value
+ while the values have expired, will cause an update of the values first.</p>
+
+<p> The <code>callback</code> property will be called for each updated value.
+          </div>
+    <dl class="function">
+    <dt>
+    <a name = "fetch_attribute_values"></a>
+    <strong>fetch_attribute_values ()</strong>
+    </dt>
+    <dd>
+    Fetches attribute values tracked by the session.
+ This will force an update, even if the values haven't expired yet. This
+ could for example be called on a recurring timer. With a configured <code>callback</code>
+ to handle the updates.
+
+
+
+    <h3>Returns:</h3>
+    <ol>
+
+        true, or nil+err
+    </ol>
+
+
+
+
+</dd>
+    <dt>
+    <a name = "get_attribute_value"></a>
+    <strong>get_attribute_value (uuid)</strong>
+    </dt>
+    <dd>
+    Gets a single attribute value, as tracked by the session.
+ If the current values are to old, it will update them in the process
+ by calling <a href="index.html#fetch_attribute_values">fetch_attribute_values</a> first.
+
+
+    <h3>Parameters:</h3>
+    <ul>
+        <li><span class="parameter">uuid</span>
+         (string) the uuid of the attribute to return the value of
+        </li>
+    </ul>
+
+    <h3>Returns:</h3>
+    <ol>
+
+        value, or nil+err
+    </ol>
+
+
+    <h3>See also:</h3>
+    <ul>
+         <a href="index.html#fetch_attribute_values">fetch_attribute_values</a>
+    </ul>
+
 
 </dd>
 </dl>
@@ -349,7 +597,7 @@
 </div> <!-- id="main" -->
 <div id="about">
 <i>generated by <a href="http://github.com/stevedonovan/LDoc">LDoc 1.4.6</a></i>
-<i style="float:right;">Last updated 2020-01-07 11:40:02 </i>
+<i style="float:right;">Last updated 2020-09-08 08:41:50 </i>
 </div> <!-- id="about" -->
 </div> <!-- id="container" -->
 </body>
