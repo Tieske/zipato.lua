@@ -1,4 +1,8 @@
---- Zipato API library for Zipabox/Zipatile home controllers.
+--- Zipato API library for Zipabox/Zipatile home controllers for the V2 api which
+-- has been deprecated.
+--
+-- The V2 devices are no longer available through the zipato cloud, only the local
+-- API remians.
 --
 -- This library implements the session management and makes it easy to access
 -- individual endpoints of the API.
@@ -18,9 +22,10 @@ local now = socket.gettime
 local zipato = {}
 local zipato_mt = { __index = zipato }
 
--- https method is set on the module table, such that it can be overridden
+-- http method is set on the module table, such that it can be overridden
 -- by another implementation (eg. Copas)
-zipato.https = require "ssl.https"
+zipato.https = require("socket.http") -- plain http for local API
+
 -- Logger is set on the module table, to be able to override it
 -- supports: debug, info, warn, error, fatal
 -- log:debug([message]|[table]|[format, ...]|[function, ...])
@@ -34,13 +39,10 @@ zipato.log = require("logging.console")()
 -- @section Generic
 
 
-local base_url="https://my.zipato.com/zipato-web/v2"
-
-
 
 
 -- Performs a HTTP request on the Zipato API.
--- @param path (string) the relative path within the API base path
+-- @param path (string) the relative path within the API base path, eg. "/v2/..."
 -- @param method (string) HTTP method to use
 -- @param headers (table) optional header table
 -- @param query (table) optional query parameters (will be escaped)
@@ -76,13 +78,13 @@ local function zipa_request(path, method, headers, query, body)
 
   local r = {
     method = assert(method, "2nd parameter 'method' missing"):upper(),
-    url = base_url .. assert(path, "1st parameter 'relative-path' missing") .. query,
+    url = assert(path, "1st parameter 'relative-path' missing") .. query,
     headers = headers,
     source = ltn12.source.string(body or ""),
     sink = ltn12.sink.table(response_body),
   }
   zipato.log:debug("[zipato] making api request to: %s %s", r.method, r.url)
-  --zipato.log:debug(r)  -- not logging because of credentials
+  zipato.log:debug(r)  -- not logging because of credentials
 
   local ok, response_code, response_headers, response_status_line = zipato.https.request(r)
   if not ok then
@@ -101,11 +103,11 @@ local function zipa_request(path, method, headers, query, body)
       break
     end
   end
---print("Response: "..require("pl.pretty").write({
+-- print("Response: "..require("pl.pretty").write({
 --  body = response_body,
 --  status = response_code,
 --  headers = response_headers,
---}))
+-- }))
 
   zipato.log:debug("[zipato] api request returned: %s", response_code)
 
@@ -169,6 +171,7 @@ end
 -- @param username (string) required, the username to use for login
 -- @param password (string) required, the password to use for login
 -- @param opts (table, optional) additional options
+-- @tparam string opts.base_url (string) the base url of the API, defaults to "http://192.168.2.6:8080".
 -- @return zipato session object
 -- @usage
 -- local zipato = require "zipato"
@@ -189,6 +192,8 @@ function zipato.new(username, password, opts)
   opts.attribute_update_config = opts.attribute_update_config or {}
 
   local self = {
+    -- local base_url="https://my.zipato.com/zipato-web"  -- web-based version; dead these days
+    base_url = opts.base_url or "http://192.168.2.6:8080",   -- local version
     username = assert(username, "1st parameter, 'username' is missing"),
     password = sha1(assert(password, "2nd parameter, 'password' is missing")),
     _attribute_values = {},
@@ -212,7 +217,7 @@ end
 --
 -- NOTE: if the response_body is json, then it will be decoded and returned as
 -- a Lua table.
--- @param path (string) the relative path within the API base path
+-- @param path (string) the relative path within the API base path, eg. "/v2/..."
 -- @param method (string) HTTP method to use
 -- @param headers (table) optional header table
 -- @param query (table) optional query parameters (will be escaped)
@@ -228,9 +233,9 @@ end
 -- local query = { ["param1"] = "value1" }
 --
 -- -- the following line will automatically log in
--- local ok, response_body, status, headers, statusline = zsession:request("/attributes", "GET", headers, query, nil)
+-- local ok, response_body, status, headers, statusline = zsession:request("/v2/attributes", "GET", headers, query, nil)
 function zipato:request(path, method, headers, query, body)
-  return _request(self, true, path, method, headers, query, body)
+  return _request(self, true, self.base_url .. path, method, headers, query, body)
 end
 
 
@@ -252,7 +257,7 @@ end
 -- local zsession = zipato.new("myself@nothere.com", "secret_password")
 --
 -- -- Make a request where we expect a 200 result
--- local ok, response_body, status, headers, statusline = zsession:rewrite_error(200, zsession:request("/attributes", "GET"))
+-- local ok, response_body, status, headers, statusline = zsession:rewrite_error(200, zsession:request("/v2/attributes", "GET"))
 -- if not ok then
 --   return nil, response_body -- a 404 will also follow this path now, since we only want 200's
 -- end
@@ -291,7 +296,7 @@ end
 function zipato:logout()
   zipato.log:debug("[zipato] logout for %s", self.username)
   if self.cookie then
-    local ok, response_body = self:rewrite_error(200, _request(self, false, "/user/logout", "GET"))
+    local ok, response_body = self:rewrite_error(200, _request(self, false, self.base_url .. "/v2/user/logout", "GET"))
     self.cookie = nil
     if not ok then
       zipato.log:error("[zipato] logout for %s failed: %s", self.username, response_body)
@@ -318,7 +323,7 @@ end
 function zipato:login()
   zipato.log:debug("[zipato] initiating login for %s", self.username)
 
-  local ok, response_body, _, headers = self:rewrite_error(200, zipa_request("/user/init", "GET"))
+  local ok, response_body, _, headers = self:rewrite_error(200, zipa_request(self.base_url .. "/v2/user/init", "GET"))
   if not ok then
     zipato.log:error("[zipato] failed to get nonce: %s", response_body)
     return nil, "failed to get nonce: "..response_body
@@ -330,7 +335,7 @@ function zipato:login()
   }
 
   self.cookie = headers["set-cookie"]
-  ok, response_body = self:rewrite_error(200, _request(self, false, "/user/login", "GET", nil, query))
+  ok, response_body = self:rewrite_error(200, _request(self, false, self.base_url .. "/v2/user/login", "GET", nil, query))
   if not ok then
     self.cookie = nil
     zipato.log:error("[zipato] failed to login: %s", response_body)
@@ -359,7 +364,7 @@ end
 -- local last_change = body.timestamp
 --function zipato:get_attribute_value(attribute_uuid)
 
---  local ok, response_body = self:rewrite_error(200, self:request("/attributes/"..attribute_uuid.."/value", "GET"))
+--  local ok, response_body = self:rewrite_error(200, self:request("/v2/attributes/"..attribute_uuid.."/value", "GET"))
 --  if not ok then
 --    return nil, "failed to get value: "..response_body
 --  end
@@ -384,7 +389,7 @@ function zipato:set_attribute_value(attribute_uuid, value, timestamp, pendingVal
     pendingTimestamp = pendingTimestamp,
   }
 
-  local ok, response_body = self:rewrite_error(202, self:request("/attributes/"..attribute_uuid.."/value", "PUT", nil, nil, body))
+  local ok, response_body = self:rewrite_error(202, self:request("/v2/attributes/"..attribute_uuid.."/value", "PUT", nil, nil, body))
   if not ok then
     return nil, "failed to set attribute value to: "..response_body
   end
@@ -398,7 +403,7 @@ end
 -- @return list, or nil+err
 function zipato:get_devices()
 
-  local ok, response_body = self:rewrite_error(200, self:request("/devices", "GET"))
+  local ok, response_body = self:rewrite_error(200, self:request("/v2/devices", "GET"))
   if not ok then
     return nil, "failed to get devices: "..response_body
   end
@@ -435,7 +440,7 @@ end
 -- @return device, or nil+err
 function zipato:get_device_details(device_uuid, query)
 
-  local ok, device_details = self:rewrite_error(200, self:request("/devices/" .. device_uuid, "GET", nil, query or { full = "true" }))
+  local ok, device_details = self:rewrite_error(200, self:request("/v2/devices/" .. device_uuid, "GET", nil, query or { full = "true" }))
   if not ok then
     return nil, "failed to get device details: "..device_details
   end
@@ -461,7 +466,7 @@ function zipato:get_device_attributes(device_uuid)
   local attributes = {}
 
   for _, endpoint in ipairs(endpoints) do
-    local ok, response_body = self:rewrite_error(200, self:request("/endpoints/"..endpoint.uuid, "GET", nil, { attributes = "true" }))
+    local ok, response_body = self:rewrite_error(200, self:request("/v2/endpoints/"..endpoint.uuid, "GET", nil, { attributes = "true" }))
     if not ok then
       return nil, "failed to get endpoint details: "..response_body
     end
@@ -490,7 +495,7 @@ function zipato:get_attribute_values(handle, update, raw)
   local headers = { ["If-None-Match"] = handle }
   local query = { update = update }
 
-  local ok, response_body, _, response_headers = self:rewrite_error(200, self:request("/attributes/all", "GET", headers, query))
+  local ok, response_body, _, response_headers = self:rewrite_error(200, self:request("/v2/attributes/all", "GET", headers, query))
   if not ok then
     return nil, "failed to get attribute values: "..response_body
   end
@@ -505,6 +510,75 @@ function zipato:get_attribute_values(handle, update, raw)
   end
 
   return values, assert(response_headers["Etag"])
+end
+
+
+
+--- Returns the mqtt configuration of the box if available.
+-- @return table with broker_ip, broker_port and box_topic, or nil+err
+function zipato:get_mqtt_config()
+  -- fetch list of networks
+  local ok, response_body = self:rewrite_error(200, self:request("/v2/networks", "GET"))
+  if not ok then
+    return nil, "failed to get network list: " .. response_body
+  end
+
+  -- do a quick search for mqtt related networks and put them in front
+  for i = 1, #response_body do
+    local network = response_body[i]
+    if network.name:lower() == "mqtt" then
+      -- seems mqtt related, add to start of array
+      response_body[i] = nil  -- in case i == #response_body
+      response_body[i] = response_body[#response_body]
+      table.insert(response_body, 1, network)
+    end
+  end
+
+  local mqtt_network
+  for _, network in ipairs(response_body) do
+    -- fetch this network
+    local ok, response_body = self:rewrite_error(200, self:request("/v2/networks/"..network.uuid, "GET", nil, {config = "true"}))
+    if not ok then
+      return nil, "failed to retrieve network " .. network.uuid .. ": " .. response_body
+    end
+
+    -- check whether it is the mqtt class
+    local cfg = (response_body or {}).config
+    if cfg.broker and cfg.topicBase then -- looks like MQTT!
+      mqtt_network = response_body
+      break
+    end
+  end
+  if not mqtt_network then
+    return nil, "no mqtt network found in retrieved network list"
+  end
+
+  -- replace NULL by nil
+  for k,v in pairs(mqtt_network) do
+    if type(v) == "userdata" then -- javascript NULL
+      mqtt_network[k] = nil
+    end
+  end
+  for k,v in pairs(mqtt_network.config or {}) do
+    if type(v) == "userdata" then -- javascript NULL
+      mqtt_network.config[k] = nil
+    end
+  end
+
+  -- print("MQTT stuff:",require("pl.pretty").write(mqtt_network))
+
+  local broker, err = url.parse(mqtt_network.config.broker)
+  if not broker then
+    return nil, "failed to parse broker url "..mqtt_network.config.broker..": "..err
+  end
+
+  return {
+    broker_ip = broker.host,
+    broker_port = broker.port or 1883,
+    box_topic = (mqtt_network.config.topicBase or "/") ..
+                (mqtt_network.config.topicPrefix or
+                (mqtt_network.config.clientId .. "/")),
+  }
 end
 
 
